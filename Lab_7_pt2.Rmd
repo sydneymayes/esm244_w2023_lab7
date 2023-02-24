@@ -1,0 +1,121 @@
+---
+title: 'Lab 7, Part 2: Spatial Interpolation and Kriging'
+author: "Sydney Mayes"
+date: "2023-02-23"
+output: html_document
+---
+
+```{r setup, echo = TRUE, warning = FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+# Session: Restart R, a good way to clear out environment, prevent more bugs
+
+library(tidyverse)
+library(here)
+library(sf)
+library(tmap)
+library(gstat)
+library(stars)
+```
+
+## Read in CA depth to groundwater data
+```{r}
+ca_counties_sf <- read_sf(here('data/ca_counties'), #very similar to st_read
+                          layer = 'CA_Counties_TIGER2016') %>% # another way of reading in the data
+  janitor::clean_names() %>% 
+  select(name)
+
+st_crs(ca_counties_sf) #  ID["EPSG",3857]]
+
+ca_dgw_sf <- read_sf(here('data/ca_dgw/F2013_DBGS_Points_20150720_093252.gpkg')) %>% 
+  janitor::clean_names()
+
+st_crs(ca_dgw_sf) # ID["EPSG",4326]] So CRS don't match up; must transform
+
+## Transform DGW data to the same CRS as CA counties
+ca_dgw_sf <- st_transform(ca_dgw_sf, st_crs(ca_counties_sf)) #could also just write 3857 since we know. This may be safer in case someone changes the CRS of ca_counties_sf
+
+### Make a quick ggplot
+ggplot() +
+  geom_sf(data = ca_counties_sf) + # you need to put 'data =' unlike when just using ggplot
+  geom_sf(data = ca_dgw_sf, aes(color = dgbs), size = .1) +
+  scale_color_gradient(low = 'pink', high = 'darkred')
+
+tmap_mode('view')
+tm_shape(ca_dgw_sf) +
+  tm_dots('dgbs', palette = 'Blues')
+
+# tmaptools::palette_explorer()  To explore colors
+```
+## Wrangle to just San Joaquin County
+
+```{r}
+sj_county_sf <- ca_counties_sf %>% 
+  filter(name == 'San Joaquin') 
+
+sj_depth_sf <- ca_dgw_sf %>% 
+  st_intersection(sj_county_sf) #returns just those that intersect with sj_depth_sf. You could also filter but this is more robust
+
+ggplot() +
+  geom_sf(data = sj_county_sf) +
+  geom_sf(data = sj_depth_sf, aes(color = dgbs)) +
+  theme_void() +
+  scale_color_viridis_c() # c = for continuous data. viridis is striking and color-blind friendly
+```
+
+## Set up for krigins
+
+```{r}
+well_duplicates <- sj_depth_sf %>% 
+  janitor::get_dupes(latitude, longitude)
+
+sj_depth_sf <- sj_depth_sf %>% 
+  filter(!local_well %in% well_duplicates$local_well) #removes the duplicates from above
+```
+
+## Make a variogram!
+```{r}
+sj_dgw_vgm <- gstat::variogram(dgbs ~ 1, data = sj_depth_sf)
+
+plot(sj_dgw_vgm)
+
+sj_dgw_vgm_fit <- fit.variogram(sj_dgw_vgm, 
+                                model = vgm(model = 'Gau',
+                                nugget = 20, 
+                                sill = 3000,
+                                range = 30000))
+                                 # play around with values to find the best fit. better estimates about nugget, sill, range will give a better fit
+
+plot(sj_dgw_vgm, sj_dgw_vgm_fit) # plot to see how well it fits
+
+attr(sj_dgw_vgm_fit, 'SSErr')
+
+```
+## Spatial kriging
+```{r}
+
+
+sj_grid <- st_bbox(sj_county_sf) %>%
+  stars::st_as_stars(dx = 1000, dy = 1000) %>% #create a grid to work in
+  st_crop(sj_county_sf)
+
+plot(sj_grid)
+
+```
+
+```{r}
+sj_dgw_krige <- krige(dgbs ~ 1, sj_depth_sf, sj_grid,
+                      model = sj_dgw_vgm_fit)
+
+plot(sj_dgw_krige)
+
+krige_df <- as.data.frame(sj_dgw_krige) %>% 
+  st_as_sf(coords = c('x', 'y')) %>% 
+  drop_na(var1.pred)
+st_crs(krige_df) <-3857
+
+ggplot(data = krige_df) +
+  geom_sf(aes(color = var1.pred)) +
+  scale_color_gradient(low = 'blue', high = 'yellow')
+```
+

@@ -1,0 +1,118 @@
+---
+title: "Lab 7: Wrangling and visualizing spatial data"
+author: "Sydney Mayes"
+date: "2023-02-23"
+output: html_document
+---
+
+```{r setup, echo = TRUE, warning = FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(here)
+library(broom)
+
+# Spatial data packages
+library(sf) # the old style of spatial analysis was sp
+library(tmap) # visualization package to make nice looking maps. an alternative to ggplot
+
+```
+
+# Read in CA county outlines
+```{r}
+ca_counties_sf <- read_sf(here('data/ca_counties/CA_Counties_TIGER2016.shp')) #sf = simple features. .prj is for the projections, .dbf is an access database format to contain attribute info, .shx ties it all together. we want to direct to the shape file
+
+ca_subset_sf <- ca_counties_sf %>% 
+  janitor::clean_names() %>% 
+  select(county_name = name, land_area = aland)
+# but sf object assumes you want to keep geometry. to remove:
+ca_subset_df <- ca_subset_sf %>% 
+  as.data.frame() %>% 
+  select(-geometry)
+
+```
+
+## Check and set the CRS
+```{r}
+ca_subset_sf %>% st_crs() # if function starts with st, usually coming from sf package. st = spatial temporal
+# ID number: "EPSG", 3857
+
+ggplot() + 
+  geom_sf(data = ca_subset_sf, aes(fill = land_area), # assumes the geometry, don't need to add
+          color = 'white', size = 0.1) + # white representing the county lines
+  scale_fill_gradientn(colors = c('cyan', 'blue', 'purple')) + 
+  theme_void() # gets rid of grid/background
+
+```
+
+## Load another data set on an invasive species
+```{r}
+sesbania_sf <- read_sf(here('data', 'red_sesbania', 'ds80.shp')) %>% 
+  janitor::clean_names()
+# file.path() # streams together file paths
+sesbania_sf %>% st_crs()
+# ID: "EPSG",9001
+
+sesbania_3857_sf <- sesbania_sf %>% 
+  st_transform(3857) # transforms the CRS from one to another. enter the number where you want to end up
+```
+
+## Plot the two together
+```{r}
+ggplot() +
+  geom_sf(data = ca_subset_sf, fill = 'grey30') +
+  geom_sf(data = sesbania_3857_sf, size = 1, color = 'red')# the order you put things in is from the bottom up, like painting the first layer
+```
+ˆ
+```{r}
+ca_sesb_sf <- ca_subset_sf %>% 
+  st_join(sesbania_3857_sf) # joins based on the spatial information
+
+sesb_counties_sf <- ca_sesb_sf %>% 
+  group_by(county_name) %>% 
+  summarize(n_records = sum(!is.na(id))) # FALSE is the same as a 0, so we are saying where it is not NA, this is a TRUE
+```
+
+
+## Plot the results
+
+```{r}
+# "Chloropleth" map: a map with outlines of things and shading is based on some values
+ggplot(data = sesb_counties_sf %>% 
+         mutate(n_records = ifelse(n_records == 0, NA, n_records))) + 
+  geom_sf(data = sesbania_3857_sf, color = 'blue')+
+  geom_sf(aes(fill = n_records), color = 'grey20', size = 0.1, alpha= .4) +
+  scale_fill_gradientn(colors = c('lightgrey', 'orange', 'red'), na.value = 'white') +
+    theme_void()
+
+```
+```{r}
+solano_sesb_sf <- sesbania_3857_sf %>% 
+  filter(county == 'Solano')
+
+solano_sf <- ca_subset_sf %>% 
+  filter(county_name == 'Solano')
+
+ggplot() +
+  geom_sf(data = solano_sf) +
+  geom_sf(data = solano_sesb_sf, color = 'red')
+```
+
+## Make an interactive map
+
+```{r}
+### set tmap to interactive mode
+tmap_mode('view') # 2 modes in tmap: view (interactive) and plot (static)
+# tmap_mode('plot')
+tm_shape(ca_subset_sf) +
+  tm_fill("land_area", palette = 'BuGn') + #BuGn == Blue to Green
+  tm_shape(sesbania_3857_sf) + 
+  tm_dots() # look up a vignette on tmap; there are lots of options
+```
+
+# Free data sources for maps: natural earth data, census data (TIGER/Line), marineregions, etc.
+# can download the R package rnaturalearth 
+# returnclass defaults to sp which is the older method, should change to sf
+
+
+
